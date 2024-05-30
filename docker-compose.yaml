@@ -1,0 +1,12 @@
+version: '3'
+services:
+  webcam_stream:
+    build: .
+    image: webcam_stream
+    ports:
+      - "4321:4321"   # Mapea el puerto 8900 del contenedor al puerto 8900 del host
+    # volumes:
+    #   - ${PWD}/assets:/app/assets
+    tty: true
+    # cpus: 4 # Establece la asignación a 0.5 (medio núcleo)
+    # mem_limit: 6g # establece el límite de memoria a 1GB
