@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from typing import Generator
 
+input_camera = 0
+
 frame = None
 app = FastAPI()
 
@@ -20,6 +22,10 @@ def generate_frames() -> Generator[bytes, None, None]:
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                 b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        
+@app.get("/")
+def home():
+    return "Running..."
 
 # Ruta para el streaming de video
 @app.get("/video_feed")
@@ -29,7 +35,7 @@ async def video_feed():
 class VideoStream:
     def __init__(self, resolution=(640,480), framerate=30):
         # Configuro el streaming de cámara USB:
-        self.stream = cv2.VideoCapture(0)
+        self.stream = cv2.VideoCapture(input_camera)
         ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         ret = self.stream.set(3,resolution[0])
         ret = self.stream.set(4,resolution[1])
