@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y \
   libglib2.0-0
 
 # Instalar dependencias
+RUN pip install pyyaml==5.3
+RUN pip install tensorflow==2.8.0
+RUN pip install tensorflow_io==0.23.1
 RUN pip install fastapi uvicorn opencv-python-headless requests Pillow matplotlib
 
 COPY . /app

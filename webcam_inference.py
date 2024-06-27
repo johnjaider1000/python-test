@@ -1,70 +1,34 @@
-import os
+import re
 import cv2
-import json
-import argparse
 from bin.LPR import LPR
 from threading import Thread
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
-from typing import Generator
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional, Union
 from typing import Generator
 from bin.VideoStream import VideoStream
-from bin.utils import get_grouped_lanes
+# from bin.utils import get_grouped_lanes
+from bin.DeviceParams import DeviceParams
+from bin.ConfigResolver import ConfigResolver
+from bin.UtilsResolver import UtilsResolver
 
-frame = None
-app = FastAPI()
+def is_rtsp_url(url: str) -> bool:
+    rtsp_regex = re.compile(r'^rtsp://.*')
+    return bool(rtsp_regex.match(url))
 
-# Crear un generador para los fotogramas
-def generate_frames() -> Generator[bytes, None, None]:
-    global frame
-    while True:
-        ret, buffer = cv2.imencode(".jpg", frame)
-        frame_bytes = buffer.tobytes()
-        yield (
-            b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-        )
+frames = {}
+videostreams = {}
+devices = []
 
-
-# Define and parse input arguments
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--graph",
-    help="Name of the .tflite file, if different than detect.tflite",
-    default="detect.tflite",
-)
-parser.add_argument(
-    "--labels",
-    help="Name of the labelmap file, if different than labelmap.txt",
-    default="labelmap.txt",
-)
-parser.add_argument(
-    "--threshold",
-    help="Minimum confidence threshold for displaying detected objects",
-    default=0.5,
-)
-parser.add_argument(
-    "--resolution",
-    help="Desired webcam resolution in WxH. If the webcam does not support the resolution entered, errors may occur.",
-    default="1280x720",
-)
-parser.add_argument(
-    "--edgetpu",
-    help="Use Coral Edge TPU Accelerator to speed up detection",
-    action="store_true",
-)
-
-args = parser.parse_args()
-
-GRAPH_NAME = args.graph
-LABELMAP_NAME = args.labels
-min_conf_threshold = float(args.threshold)
-resW, resH = args.resolution.split("x")
+# Configuración inicial
+resolution = '1280x720'
+resW, resH = resolution.split("x")
 imW, imH = int(resW), int(resH)
-use_TPU = args.edgetpu
+use_TPU = 'store_true'
 show_outputs = False
 min_conf = 0.3
+lprModel = None
 
 # Initialize LPR instance
 settings = {
@@ -76,127 +40,223 @@ settings = {
     "equalize_ocr": True,
 }
 
-lprModel = LPR(
-    plates_model=settings["plates_model"],
-    ocr_model=settings["ocr_model"],
-    equalize_plates=settings["equalize_plates"],
-    equalize_ocr=settings["equalize_ocr"],
+app = FastAPI()
+origins = [
+    "http://localhost:8282"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=['GET', 'POST'],
+    allow_headers=['*'],
 )
 
-# Initialize frame rate calculation
-frame_rate_calc = 1
-freq = cv2.getTickFrequency()
+def init():
+    print('Iniciando dispositivos...')
+    
+    # Cargar los devices
+    global devices
+    _configResolver = ConfigResolver()    
+    cameras = _configResolver.get_cameras()
+    if cameras['code'] > 0:
+        list_cameras = cameras['data']['cameras']
+        for camera in list_cameras:
+            devices.append(camera['props'])
+    
+        # Ejecutar las funciones en los devices
+    
+        # 1. Ejecutar los streams:
+        for device in devices:
+            stream_device(device['index'])
 
-videostream = None
-# time.sleep(1)
-
-def loop():
-    global frame
+# Crear un generador para los fotogramas
+def generate_frames(camera_id) -> Generator[bytes, None, None]:
+    global frames
+    if not camera_id in frames:
+        raise IOError('No se encontró el streaming')
+    
     while True:
-        # Start timer (for calculating frame rate)
-        t1 = cv2.getTickCount()
+        ret, buffer = cv2.imencode(".jpg", frames[camera_id])
+        frame_bytes = buffer.tobytes()
+        yield (
+            b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+        )
 
-        # Grab frame from video stream
-        # frame1 = videostream.read()
 
-        # Acquire frame and resize to expected shape [1xHxWx3]
-        # frame = frame1.copy()
+def load_model():
+    global lprModel
 
-        # frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # frame_resized = cv2.resize(frame_rgb, (width, height))
-        # input_data = np.expand_dims(frame_resized, axis=0)
+    if lprModel is not None:
+        return
+    
+    # Cargamos el modelo.
+    lprModel = LPR(
+        plates_model=settings["plates_model"],
+        ocr_model=settings["ocr_model"],
+        equalize_plates=settings["equalize_plates"],
+        equalize_ocr=settings["equalize_ocr"],
+    )
 
+
+def loop(camera_id):
+    global frames
+    global videostreams
+
+    while True:
         # Aquí tengo que hacer la predicción...
         detections = lprModel.predict(
-            image_path=frame,
+            image_path=frames[camera_id],
             show_image=show_outputs,
             show_boxes=True,
             min_conf=min_conf,
         )
         print("DETECTIONS: ", detections)
 
-        # Draw framerate in corner of frame
-        # cv2.putText(frame,'FPS: {0:.2f}'.format(frame_rate_calc),(30,50),cv2.FONT_HERSHEY_SIMPLEX,1,(255,0,255),2,cv2.LINE_AA)
 
-        # All the results have been drawn on the frame, so it's time to display it.
-        cv2.imshow("Object detector", frame)
+def capture_stream(camera_id):
+    global frames
+    while camera_id in videostreams:
+        frames[camera_id] = videostreams[camera_id].read()
 
-        # Calculate framerate
-        t2 = cv2.getTickCount()
-        time1 = (t2 - t1) / freq
-        frame_rate_calc = 1 / time1
-
-        # Press 'q' to quit
-        # if cv2.waitKey(1) == ord("q"):
-        #    break
-
-    # Clean up
-    # cv2.destroyAllWindows()
-    videostream.stop()
-
-def capture_stream():
-    global frame
-    while True:
-        frame = videostream.read()
 
 # Ruta para el streaming de video
-@app.get("/video_feed")
-async def video_feed():
-    global videostream
-    if videostream is None:
+@app.get("/video_feed/{camera_id}")
+async def video_feed(camera_id: int):
+    global videostreams
+    if videostreams[camera_id] is None:
         return "stream unavailable"
     return StreamingResponse(
-        generate_frames(), media_type="multipart/x-mixed-replace; boundary=frame"
+        generate_frames(camera_id), media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
-# Cuando se haya configurado la cámara, se iniciará el streaming de vídeo
-@app.get("/run_stream")
-def run_stream():
+
+@app.get('/stream_device/{device_id}')
+def stream_device(device_id: str):
     # Initialize video stream
-    global videostream
-    videostream = VideoStream(resolution=(imW, imH), framerate=30).start()
-    Thread(target=capture_stream, args=()).start()
+    global videostreams
+    isRTSP = is_rtsp_url(device_id)
+    input = None
+    if not isRTSP:
+        input = int(device_id)
+        
+    if device_id not in videostreams:        
+        videostreams[device_id] = VideoStream(input=input).start()
+        Thread(target=capture_stream, args=(device_id,)).start()
+        print('SE INICIA EL STREAMING....', device_id)
+        
+    return StreamingResponse(
+        generate_frames(device_id), media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+# Cuando se haya configurado la cámara, se iniciará el streaming de vídeo
+@app.get("/run_stream/{camera_id}")
+def run_stream(camera_id: str):    
+    # Initialize video stream
+    global videostreams
+    videostreams[camera_id] = VideoStream().start()
+    Thread(target=capture_stream, args=(camera_id,)).start()
     return {"code": 1, "message": "Ok, Streaming started."}
 
 
+@app.post('/stop_stream/{camera_id}')
+def stop_stream(camera_id: str):
+    global videostreams
+    if camera_id in videostreams:        
+        videostreams[camera_id].stop()
+        del videostreams[camera_id]        
+        return {"code": 1, "message": "Ok, Streaming stoped."}
+    
+    return {"code": -1, "message": "Invalid camera id."}
+
+
 # Cuando la configuración esté lista, se invocará este método para reconocer las placas
-@app.get("/run_inference")
-def run():
-    Thread(target=loop, args=()).start()
+@app.get("/run_inference/{camera_id}")
+def run(camera_id: str):
+    load_model()
+    Thread(target=loop, args=(camera_id,)).start()
     return {"code": 1, "message": "Ok, started."}
 
-@app.post('/save_config')
-def save_config(config):
-    # Aquí guardaré la configuración de cámara, etc...
-    '''
-        {
-            camera: {
-                connection_type: "usb" | "rtsp",
-                rtsp_url: string,
-                device: number,
-            }
-        },
-        lanes: []
-    '''
-    print(config)
-    
-@app.get("/get_config")
-def get_config():
-    # Tengo que verificar si el archivo de configuración existe
-    file_config_path = os.path.join('./', 'config.json')
-    if not os.path.exists(file_config_path):
-        return {'code': -1, 'message': 'La configuración no está disponible.'}
-    config_data = None
-    with open('config.json', 'r') as f:
-        config_data = json.load(f)
 
-    if config_data is None:
-        return {'code': -1, 'message': 'La configuración no está disponible.'}
+@app.post('/save_camera')
+def save_camera(device: DeviceParams):
+    _configResolver = ConfigResolver()
+    return _configResolver.save_camera(device)
 
-    return {'code': 1, 'message': "Correcto", 'data': config_data}
+
+@app.get("/get_cameras")
+def get_cameras():
+   _configResolver = ConfigResolver()
+   return _configResolver.get_cameras()
+
+
+@app.post('/set_areas')
+def set_areas(device: DeviceParams):
+    _configResolver = ConfigResolver()
+    return _configResolver.set_areas(device)
+
+
+@app.get('/get_devices')
+def get_devices():
+    global devices
+    _utilsResolver = UtilsResolver()
+    response = _utilsResolver.getDevices()
+    print('rdevices', response)
+    # devices.extend(response['data'])
+    for item in response['data']:
+        found = False
+        for device in devices:
+            if item['index'] == device['index']:
+                found = True
+        if not found:
+            devices.append(item)
+        
+    print('OK:', devices)
+    _configResolver = ConfigResolver()
+    devices = _configResolver.filter_devices_unregistered(devices)
+    print('devices:', devices)
+    response['data'] = devices
+    return response
+
+@app.post('/remove_device')
+def remove_device(device: DeviceParams):
+    global devices
+    # Removemos la cámara del archivo de configuración
+    _configResolver = ConfigResolver()    
+    deleted_camera = _configResolver.remove_camera(device.id)
+    print('deleted_camera:', deleted_camera)
+    if deleted_camera is None:
+        return {'code': -1, 'message': 'Esta cámara ya no existe'}
     
+    # Removemos en los devices actuales
+    filtered_devices = []
+    for device in devices:
+        if device['index'] != deleted_camera['props']['index']:
+            filtered_devices.append(device)
+    devices = filtered_devices
+    
+    # Detenemos los procesos existentes de stream
+    stop_stream(str(deleted_camera['props']['index']))
+    return {'code': 1, 'message': 'Se ha removido el dispositivo y se han detenido las tareas en ejecución'}
+
+@app.get('/get_device/{id}')
+def get_device(id: str):
+    _configResolver = ConfigResolver()
+    cameras = _configResolver.get_cameras()
+    if cameras['code'] > 0:
+        cameras = cameras['data']['cameras']
+        # Buscamos el dispositivo por id
+        for camera in cameras:
+            if camera['id'] == id:
+                return {'code': 1, 'message': 'Se ha encontrado el dispositivo correctamente', 'data': camera}
+    
+    return {'code': -1, 'message': 'No se encontró el dispositivo'}
+
+init()
 
 if __name__ == "__main__":
     import uvicorn
-
+    
     uvicorn.run(app, host="0.0.0.0", port=8000)
