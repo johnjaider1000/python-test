@@ -1,4 +1,6 @@
+import os
 import cv2
+import json
 import argparse
 from bin.LPR import LPR
 from threading import Thread
@@ -180,8 +182,18 @@ def save_config(config):
     
 @app.get("/get_config")
 def get_config():
-    data = 1
-    return {'code': 1, 'message': "Correcto", 'data': data}
+    # Tengo que verificar si el archivo de configuración existe
+    file_config_path = os.path.join('./', 'config.json')
+    if not os.path.exists(file_config_path):
+        return {'code': -1, 'message': 'La configuración no está disponible.'}
+    config_data = None
+    with open('config.json', 'r') as f:
+        config_data = json.load(f)
+
+    if config_data is None:
+        return {'code': -1, 'message': 'La configuración no está disponible.'}
+
+    return {'code': 1, 'message': "Correcto", 'data': config_data}
     
 
 if __name__ == "__main__":

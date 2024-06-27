@@ -10,9 +10,9 @@ RUN apt-get update && apt-get install -y \
   libglib2.0-0
 
 # Instalar dependencias
-RUN pip install fastapi uvicorn opencv-python-headless
+RUN pip install fastapi uvicorn opencv-python-headless requests Pillow matplotlib
 
 COPY . /app
 
 # CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-CMD ["python", "webcam_stream.py"]
+CMD ["python", "webcam_inference.py"]
