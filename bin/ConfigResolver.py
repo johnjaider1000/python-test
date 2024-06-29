@@ -22,6 +22,7 @@ class ConfigResolver:
             'connection_type': device.connection_type,
             'rtsp_url': device.rtsp_url,
             'device': device.device,
+            'effects': device.effects,
             'lanes': device.lanes,
             'props': device.props,
         }

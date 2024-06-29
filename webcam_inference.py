@@ -5,13 +5,13 @@ from threading import Thread
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, Union
 from typing import Generator
 from bin.VideoStream import VideoStream
 # from bin.utils import get_grouped_lanes
 from bin.DeviceParams import DeviceParams
 from bin.ConfigResolver import ConfigResolver
 from bin.UtilsResolver import UtilsResolver
+from bin.Effects import Effects
 
 def is_rtsp_url(url: str) -> bool:
     rtsp_regex = re.compile(r'^rtsp://.*')
@@ -20,6 +20,7 @@ def is_rtsp_url(url: str) -> bool:
 frames = {}
 videostreams = {}
 devices = []
+effects = {}
 
 # Configuración inicial
 resolution = '1280x720'
@@ -69,16 +70,29 @@ def init():
     
         # 1. Ejecutar los streams:
         for device in devices:
-            stream_device(device['index'])
+            prepare_stream(str(device['index']))
 
 # Crear un generador para los fotogramas
 def generate_frames(camera_id) -> Generator[bytes, None, None]:
     global frames
+    effectsInstance = Effects()
     if not camera_id in frames:
         raise IOError('No se encontró el streaming')
     
     while True:
-        ret, buffer = cv2.imencode(".jpg", frames[camera_id])
+        frame = frames[camera_id]
+        
+        if camera_id in effects:
+            brightness = effects[camera_id]['brightness']
+            contrast = effects[camera_id]['contrast']
+            
+            print('brightness:', brightness)
+            print('contrast:', contrast)
+            
+            if brightness or contrast:
+                frame = effectsInstance.ilumination(img=frame, brightness=brightness, contrast=contrast)
+
+        ret, buffer = cv2.imencode(".jpg", frame)
         frame_bytes = buffer.tobytes()
         yield (
             b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
@@ -119,6 +133,7 @@ def capture_stream(camera_id):
     global frames
     while camera_id in videostreams:
         frames[camera_id] = videostreams[camera_id].read()
+    print('capture_stream ended:', camera_id)
 
 
 # Ruta para el streaming de video
@@ -132,11 +147,9 @@ async def video_feed(camera_id: int):
     )
 
 
-@app.get('/stream_device/{device_id}')
-def stream_device(device_id: str):
-    # Initialize video stream
+def prepare_stream(device_id: str):
     global videostreams
-    isRTSP = is_rtsp_url(device_id)
+    isRTSP = is_rtsp_url(device_id) if isinstance(device_id, str) else False
     input = None
     if not isRTSP:
         input = int(device_id)
@@ -144,7 +157,12 @@ def stream_device(device_id: str):
     if device_id not in videostreams:        
         videostreams[device_id] = VideoStream(input=input).start()
         Thread(target=capture_stream, args=(device_id,)).start()
-        print('SE INICIA EL STREAMING....', device_id)
+
+        
+@app.get('/stream_device/{device_id}')
+def stream_device(device_id: str):
+    # Initialize video stream
+    prepare_stream(device_id)    
         
     return StreamingResponse(
         generate_frames(device_id), media_type="multipart/x-mixed-replace; boundary=frame"
@@ -153,7 +171,7 @@ def stream_device(device_id: str):
 
 # Cuando se haya configurado la cámara, se iniciará el streaming de vídeo
 @app.get("/run_stream/{camera_id}")
-def run_stream(camera_id: str):    
+def run_stream(camera_id: str):
     # Initialize video stream
     global videostreams
     videostreams[camera_id] = VideoStream().start()
@@ -203,7 +221,6 @@ def get_devices():
     global devices
     _utilsResolver = UtilsResolver()
     response = _utilsResolver.getDevices()
-    print('rdevices', response)
     # devices.extend(response['data'])
     for item in response['data']:
         found = False
@@ -213,10 +230,8 @@ def get_devices():
         if not found:
             devices.append(item)
         
-    print('OK:', devices)
     _configResolver = ConfigResolver()
     devices = _configResolver.filter_devices_unregistered(devices)
-    print('devices:', devices)
     response['data'] = devices
     return response
 
@@ -240,6 +255,18 @@ def remove_device(device: DeviceParams):
     # Detenemos los procesos existentes de stream
     stop_stream(str(deleted_camera['props']['index']))
     return {'code': 1, 'message': 'Se ha removido el dispositivo y se han detenido las tareas en ejecución'}
+
+@app.post('/apply_filters')
+def apply_filters(device: DeviceParams):
+    _device = get_device(device.id)
+    if _device['code'] < 0:
+        return _device
+    
+    deviceIndex =_device['data']['props']['index']
+    effects[str(deviceIndex)] = {
+        'brightness': device.effects['brightness'] if 'brightness' in device.effects else None,
+        'contrast': device.effects['contrast'] if 'contrast' in device.effects else None,
+    }
 
 @app.get('/get_device/{id}')
 def get_device(id: str):

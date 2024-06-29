@@ -9,3 +9,4 @@ class DeviceParams(BaseModel):
     device: Optional[Union[str, int]] = None
     lanes: Optional[List[Any]] = None
     props: Optional[Any] = None
+    effects: Optional[Any] = None

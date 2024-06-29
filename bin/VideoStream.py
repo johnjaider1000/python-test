@@ -4,7 +4,7 @@ from threading import Thread
 class VideoStream:
     def __init__(self, input = 0, resolution=(640, 480), framerate=30):
         # Configuro el streaming de cámara USB:
-        self.stream = cv2.VideoCapture(0)
+        self.stream = cv2.VideoCapture(input)
         # if not self.stream.isOpened():
         #     raise IOError('Error al obtener imagen del dispositivo')
         
